@@ -1,0 +1,8 @@
+package domain
+
+// UserRepository defines the interface for user persistence
+type UserRepository interface {
+	Save(user User) error
+	FindByEmail(email *Email) (User, error)
+	FindByID(id string) (User, error)
+}
