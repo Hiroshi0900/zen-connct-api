@@ -1,83 +1,225 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 	"zen-connect/internal/infrastructure/auth0"
+	"zen-connect/internal/infrastructure/logger"
+	"zen-connect/internal/infrastructure/postgres"
+	"zen-connect/internal/infrastructure/session"
 	"zen-connect/internal/shared/interfaces"
+	"zen-connect/internal/user/infrastructure"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
+	"go.uber.org/zap"
 )
 
 func main() {
-	// Create Echo instance
-	e := echo.New()
+	// Load environment variables from .env file
+	if err := godotenv.Load(); err != nil {
+		log.Println("Warning: .env file not found, using system environment variables")
+	}
 
-	// Middleware
-	e.Use(echoMiddleware.Logger())
-	e.Use(echoMiddleware.Recover())
-	e.Use(echoMiddleware.CORS())
+	// Initialize logger
+	loggerConfig := logger.NewConfig()
+	if err := logger.Initialize(loggerConfig); err != nil {
+		log.Fatal("Failed to initialize logger:", err)
+	}
+	defer logger.Close()
+
+	// Use structured logging from here on
+	logger.Info("Starting zen-connect application",
+		zap.String("service", loggerConfig.ServiceName),
+		zap.String("version", loggerConfig.ServiceVersion),
+		zap.String("environment", loggerConfig.Environment),
+	)
+
+	ctx := context.Background()
+
+	// Initialize PostgreSQL client
+	logger.Info("Initializing PostgreSQL client")
+	pgClient, err := postgres.NewClient(ctx)
+	if err != nil {
+		logger.Fatal("Failed to create PostgreSQL client", zap.Error(err))
+	}
+	defer func() {
+		logger.Info("Closing PostgreSQL client")
+		pgClient.Close()
+	}()
+	logger.Info("PostgreSQL client initialized successfully")
+
+	// Initialize repositories
+	logger.Info("Initializing repositories")
+	userRepo := infrastructure.NewPostgresUserRepository(pgClient.Pool)
+
+	// Initialize session store
+	logger.Info("Initializing session store")
+	sessionStore, err := session.NewCookieStore()
+	if err != nil {
+		logger.Fatal("Failed to create session store", zap.Error(err))
+	}
+	logger.Info("Session store initialized successfully")
 
 	// Initialize Auth0 configuration
+	logger.Info("Initializing Auth0 configuration")
 	auth0Config, err := auth0.NewConfig()
 	if err != nil {
-		log.Fatal("Failed to create Auth0 config:", err)
+		logger.Fatal("Failed to create Auth0 config", zap.Error(err))
 	}
+	logger.Info("Auth0 configuration loaded",
+		zap.String("domain", auth0Config.Domain),
+		zap.String("audience", auth0Config.Audience),
+	)
 
-	// Initialize Auth0 middleware
-	authMiddleware, err := auth0.NewAuthMiddleware(auth0Config)
+	// Initialize OIDC provider
+	logger.Info("Initializing OIDC provider")
+	provider, err := oidc.NewProvider(ctx, auth0Config.IssuerURL())
 	if err != nil {
-		log.Fatal("Failed to create Auth0 middleware:", err)
+		logger.Fatal("Failed to create OIDC provider", zap.Error(err))
 	}
+	logger.Info("OIDC provider initialized successfully")
 
-	// Initialize Auth0 service and handler
+	// Initialize Auth0 service
+	logger.Info("Initializing Auth0 service")
 	authService, err := auth0.NewAuthService(auth0Config)
 	if err != nil {
-		log.Fatal("Failed to create Auth0 service:", err)
+		logger.Fatal("Failed to create Auth0 service", zap.Error(err))
 	}
-	auth0Handler := interfaces.NewAuth0Handler(authService)
+	logger.Info("Auth0 service initialized successfully")
 
-	// Setup Auth0 routes
+	// Initialize session middleware
+	logger.Info("Initializing session middleware")
+	sessionMiddleware := session.NewMiddleware(sessionStore)
+
+	// Create Echo instance
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+
+	// Global middleware with structured logging
+	e.Use(logger.RequestLoggerMiddleware())
+	e.Use(logger.SessionLoggerMiddleware())
+	e.Use(logger.ErrorLoggerMiddleware())
+	e.Use(logger.RecoveryLoggerMiddleware())
+	e.Use(echoMiddleware.CORS())
+
+	// Initialize Auth0 handler
+	logger.Info("Initializing Auth0 handler")
+	auth0Handler, err := interfaces.NewAuth0Handler(authService, userRepo, sessionStore, provider, auth0Config)
+	if err != nil {
+		logger.Fatal("Failed to create Auth0 handler", zap.Error(err))
+	}
+	logger.Info("Auth0 handler initialized successfully")
+
+	// Setup routes
+	logger.Info("Setting up application routes")
 	auth0Handler.SetupRoutes(e)
 
 	// Setup API documentation
 	routesHandler := interfaces.NewRoutesHandler()
 	routesHandler.SetupRoutes(e)
+	logger.Info("Routes configured successfully")
 
-	// Health check endpoint
+	// Health check endpoints
 	e.GET("/health", func(c echo.Context) error {
+		logCtx := logger.WithContext(c.Request().Context())
+		logCtx.Debug("Health check requested")
 		return c.JSON(200, map[string]string{
 			"status":  "OK",
 			"service": "zen-connect-api",
 		})
 	})
 
-	// Protected health check endpoint to test Auth0
+	// Protected health check endpoint to test session-based auth
 	e.GET("/health/protected", func(c echo.Context) error {
-		userID, ok := auth0.GetUserIDFromContext(c.Request().Context())
+		logCtx := logger.WithContext(c.Request().Context())
+		userID, ok := session.GetUserIDFromContext(c.Request().Context())
 		if !ok {
+			logCtx.Warn("Protected health check accessed without authentication")
 			return c.JSON(401, map[string]string{
 				"error": "User not authenticated",
 			})
 		}
 
-		email, _ := auth0.GetUserEmailFromContext(c.Request().Context())
-		name, _ := auth0.GetUserNameFromContext(c.Request().Context())
+		email, _ := session.GetUserEmailFromContext(c.Request().Context())
+		name, _ := session.GetUserNameFromContext(c.Request().Context())
+		auth0UserID, _ := session.GetAuth0UserIDFromContext(c.Request().Context())
+
+		logCtx.Info("Protected health check accessed by authenticated user",
+			zap.String("user_id", userID),
+			zap.String("auth0_user_id", auth0UserID),
+		)
 
 		return c.JSON(200, map[string]interface{}{
-			"status":  "OK",
-			"service": "zen-connect-api",
-			"user_id": userID,
-			"email":   email,
-			"name":    name,
+			"status":        "OK",
+			"service":       "zen-connect-api",
+			"user_id":       userID,
+			"auth0_user_id": auth0UserID,
+			"email":         email,
+			"name":          name,
 		})
-	}, authMiddleware.RequireAuth())
+	}, sessionMiddleware.RequireAuth())
 
-	// Start server
-	log.Println("Starting zen-connect API server on :8080")
-	log.Printf("Auth0 Domain: %s", auth0Config.Domain)
-	log.Printf("Auth0 Audience: %s", auth0Config.Audience)
-	if err := e.Start(":8080"); err != nil {
-		log.Fatal("Failed to start server:", err)
+	// Database health check
+	e.GET("/health/db", func(c echo.Context) error {
+		logCtx := logger.WithContext(c.Request().Context())
+		logCtx.Debug("Database health check requested")
+		
+		start := time.Now()
+		if err := pgClient.Health(c.Request().Context()); err != nil {
+			logCtx.Error("Database health check failed",
+				zap.Error(err),
+				zap.Duration("duration", time.Since(start)),
+			)
+			return c.JSON(500, map[string]string{
+				"status": "ERROR",
+				"error":  err.Error(),
+			})
+		}
+		
+		logCtx.Info("Database health check successful",
+			zap.Duration("duration", time.Since(start)),
+		)
+		return c.JSON(200, map[string]string{
+			"status": "OK",
+			"db":     "connected",
+		})
+	})
+
+	// Start server with graceful shutdown
+	go func() {
+		logger.Info("Starting zen-connect API server",
+			zap.String("port", "8080"),
+			zap.String("auth0_domain", auth0Config.Domain),
+			zap.String("auth0_audience", auth0Config.Audience),
+			zap.String("database_url", "***MASKED***"),
+			zap.String("environment", loggerConfig.Environment),
+		)
+		if err := e.Start(":8080"); err != nil {
+			logger.Info("Server stopped", zap.Error(err))
+		}
+	}()
+
+	// Wait for interrupt signal to gracefully shutdown the server
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	logger.Info("Shutdown signal received, starting graceful shutdown")
+
+	// Graceful shutdown with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	if err := e.Shutdown(shutdownCtx); err != nil {
+		logger.Fatal("Server forced to shutdown", zap.Error(err))
 	}
+	
+	logger.Info("Server shutdown completed successfully")
 }

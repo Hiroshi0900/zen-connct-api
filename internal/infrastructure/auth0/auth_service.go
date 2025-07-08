@@ -117,3 +117,8 @@ func (s *AuthService) GetLoginURL(state string) string {
 	// 	oauth2.SetAuthURLParam("audience", s.config.Audience),
 	// )
 }
+
+// GetOAuth2Config returns the OAuth2 configuration
+func (s *AuthService) GetOAuth2Config() *oauth2.Config {
+	return s.oauth2Config
+}

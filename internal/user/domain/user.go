@@ -7,174 +7,229 @@ import (
 )
 
 type (
-	// baseUser はユーザーの基本的な情報を表すインターフェース
-	baseUser struct {
-		id           string
-		email        *Email
-		passwordHash string
+	// Profile represents user profile information
+	Profile struct {
+		displayName     string
+		bio            string
+		profileImageURL string
 	}
-	// UnverifiedUser は表す未検証のユーザー
-	UnverifiedUser struct {
-		baseUser
+
+	// ProvisionalUser represents a user that hasn't completed Auth0 registration
+	ProvisionalUser struct {
+		id        string
+		email     *Email
 		createdAt time.Time
 		events    []DomainEvent
 	}
 
-	// VerifiedUser は表す検証済みのユーザー
-	VerifiedUser struct {
-		baseUser
-		createdAt  time.Time
-		verifiedAt time.Time
-		events     []DomainEvent
+	// ActiveUser represents a user that has completed Auth0 registration
+	ActiveUser struct {
+		id            string
+		auth0UserID   string
+		email         *Email
+		profile       *Profile
+		emailVerified bool
+		createdAt     time.Time
+		verifiedAt    *time.Time
+		updatedAt     time.Time
+		events        []DomainEvent
 	}
 
-	// User はユーザーのインターフェース
+	// User interface for both user types
 	User interface {
 		ID() string
 		Email() *Email
-		PasswordHash() string
 		CreatedAt() time.Time
 		Events() []DomainEvent
 		ClearEvents()
-		VerifyPassword(password *Password) bool
-		ChangePassword(newPassword *Password) error
-		IsUnverified() bool
-		IsVerified() bool
+		IsProvisional() bool
+		IsActive() bool
 	}
 )
 
-func (u baseUser) ID() string           { return u.id }
-func (u baseUser) Email() *Email        { return u.email }
-func (u baseUser) PasswordHash() string { return u.passwordHash }
-
-// NewUnverifiedUser creates a new unverified user
-func NewUnverifiedUser(email *Email, password *Password) (*UnverifiedUser, error) {
-	id := uuid.New().String()
-	passwordHash, err := password.Hash()
-	if err != nil {
-		return nil, err
+// NewProfile creates a new Profile value object
+func NewProfile(displayName, bio, profileImageURL string) *Profile {
+	return &Profile{
+		displayName:     displayName,
+		bio:            bio,
+		profileImageURL: profileImageURL,
 	}
+}
 
+// Getters for Profile
+func (p *Profile) DisplayName() string     { return p.displayName }
+func (p *Profile) Bio() string            { return p.bio }
+func (p *Profile) ProfileImageURL() string { return p.profileImageURL }
+
+// UpdateDisplayName updates the display name
+func (p *Profile) UpdateDisplayName(displayName string) {
+	p.displayName = displayName
+}
+
+// UpdateBio updates the bio
+func (p *Profile) UpdateBio(bio string) {
+	p.bio = bio
+}
+
+// UpdateProfileImageURL updates the profile image URL
+func (p *Profile) UpdateProfileImageURL(url string) {
+	p.profileImageURL = url
+}
+
+// NewProvisionalUser creates a new provisional user
+func NewProvisionalUser(email *Email) *ProvisionalUser {
+	id := uuid.New().String()
 	createdAt := time.Now()
 	userRegisteredEvent := NewUserRegistered(id, email.Value(), createdAt)
 
-	return &UnverifiedUser{
-		baseUser: baseUser{
-			id:           id,
-			email:        email,
-			passwordHash: passwordHash,
-		},
+	return &ProvisionalUser{
+		id:        id,
+		email:     email,
 		createdAt: createdAt,
 		events:    []DomainEvent{userRegisteredEvent},
-	}, nil
-}
-
-// VerifyEmail transitions an UnverifiedUser to VerifiedUser
-func (u *UnverifiedUser) VerifyEmail() *VerifiedUser {
-	verifiedAt := time.Now()
-	emailVerifiedEvent := NewEmailVerified(u.id, u.email.Value(), verifiedAt)
-
-	return &VerifiedUser{
-		baseUser: baseUser{
-			id:           u.id,
-			email:        u.email,
-			passwordHash: u.passwordHash,
-		},
-		createdAt:  u.createdAt,
-		verifiedAt: verifiedAt,
-		events:     append(u.events, emailVerifiedEvent),
 	}
 }
 
-// UnverifiedUser methods
-func (u *UnverifiedUser) CreatedAt() time.Time  { return u.createdAt }
-func (u *UnverifiedUser) Events() []DomainEvent { return u.events }
-func (u *UnverifiedUser) IsUnverified() bool    { return true }
-func (u *UnverifiedUser) IsVerified() bool      { return false }
+// NewActiveUser creates a new active user from Auth0 information
+func NewActiveUser(auth0UserID string, email *Email, displayName string, emailVerified bool) *ActiveUser {
+	id := uuid.New().String()
+	now := time.Now()
+	profile := NewProfile(displayName, "", "")
 
-func (u *UnverifiedUser) ClearEvents() {
+	var verifiedAt *time.Time
+	if emailVerified {
+		verifiedAt = &now
+	}
+
+	userRegisteredEvent := NewUserRegistered(id, email.Value(), now)
+
+	return &ActiveUser{
+		id:            id,
+		auth0UserID:   auth0UserID,
+		email:         email,
+		profile:       profile,
+		emailVerified: emailVerified,
+		createdAt:     now,
+		verifiedAt:    verifiedAt,
+		updatedAt:     now,
+		events:        []DomainEvent{userRegisteredEvent},
+	}
+}
+
+// ActivateUser transitions a ProvisionalUser to ActiveUser with Auth0 information
+func (u *ProvisionalUser) ActivateUser(auth0UserID string, displayName string, emailVerified bool) *ActiveUser {
+	now := time.Now()
+	profile := NewProfile(displayName, "", "")
+
+	var verifiedAt *time.Time
+	if emailVerified {
+		verifiedAt = &now
+	}
+
+	emailVerifiedEvent := NewEmailVerified(u.id, u.email.Value(), now)
+
+	return &ActiveUser{
+		id:            u.id,
+		auth0UserID:   auth0UserID,
+		email:         u.email,
+		profile:       profile,
+		emailVerified: emailVerified,
+		createdAt:     u.createdAt,
+		verifiedAt:    verifiedAt,
+		updatedAt:     now,
+		events:        append(u.events, emailVerifiedEvent),
+	}
+}
+
+// ProvisionalUser methods
+func (u *ProvisionalUser) ID() string            { return u.id }
+func (u *ProvisionalUser) Email() *Email         { return u.email }
+func (u *ProvisionalUser) CreatedAt() time.Time  { return u.createdAt }
+func (u *ProvisionalUser) Events() []DomainEvent { return u.events }
+func (u *ProvisionalUser) IsProvisional() bool   { return true }
+func (u *ProvisionalUser) IsActive() bool        { return false }
+
+func (u *ProvisionalUser) ClearEvents() {
 	u.events = []DomainEvent{}
 }
 
-func (u *UnverifiedUser) VerifyPassword(password *Password) bool {
-	return VerifyHash(password.Value(), u.passwordHash)
+// ActiveUser methods
+func (a *ActiveUser) ID() string              { return a.id }
+func (a *ActiveUser) Auth0UserID() string     { return a.auth0UserID }
+func (a *ActiveUser) Email() *Email           { return a.email }
+func (a *ActiveUser) Profile() *Profile       { return a.profile }
+func (a *ActiveUser) EmailVerified() bool     { return a.emailVerified }
+func (a *ActiveUser) CreatedAt() time.Time    { return a.createdAt }
+func (a *ActiveUser) VerifiedAt() *time.Time  { return a.verifiedAt }
+func (a *ActiveUser) UpdatedAt() time.Time    { return a.updatedAt }
+func (a *ActiveUser) Events() []DomainEvent   { return a.events }
+func (a *ActiveUser) IsProvisional() bool     { return false }
+func (a *ActiveUser) IsActive() bool          { return true }
+
+func (a *ActiveUser) ClearEvents() {
+	a.events = []DomainEvent{}
 }
 
-func (u *UnverifiedUser) ChangePassword(newPassword *Password) error {
-	newPasswordHash, err := newPassword.Hash()
-	if err != nil {
-		return err
+// UpdateProfile updates the user's profile information
+func (a *ActiveUser) UpdateProfile(displayName, bio, profileImageURL string) {
+	a.profile.UpdateDisplayName(displayName)
+	a.profile.UpdateBio(bio)
+	a.profile.UpdateProfileImageURL(profileImageURL)
+	a.updatedAt = time.Now()
+}
+
+// UpdateEmail updates the user's email
+func (a *ActiveUser) UpdateEmail(email *Email) {
+	a.email = email
+	a.updatedAt = time.Now()
+}
+
+// VerifyEmail marks the email as verified
+func (a *ActiveUser) VerifyEmail() {
+	if !a.emailVerified {
+		a.emailVerified = true
+		now := time.Now()
+		a.verifiedAt = &now
+		a.updatedAt = now
+		
+		emailVerifiedEvent := NewEmailVerified(a.id, a.email.Value(), now)
+		a.events = append(a.events, emailVerifiedEvent)
 	}
-	u.passwordHash = newPasswordHash
-
-	changedAt := time.Now()
-	passwordChangedEvent := NewPasswordChanged(u.id, changedAt)
-	u.events = append(u.events, passwordChangedEvent)
-
-	return nil
-}
-
-// VerifiedUser methods
-func (v *VerifiedUser) CreatedAt() time.Time  { return v.createdAt }
-func (v *VerifiedUser) VerifiedAt() time.Time { return v.verifiedAt }
-func (v *VerifiedUser) Events() []DomainEvent { return v.events }
-func (v *VerifiedUser) IsUnverified() bool    { return false }
-func (v *VerifiedUser) IsVerified() bool      { return true }
-
-func (v *VerifiedUser) ClearEvents() {
-	v.events = []DomainEvent{}
-}
-
-func (v *VerifiedUser) VerifyPassword(password *Password) bool {
-	return VerifyHash(password.Value(), v.passwordHash)
-}
-
-func (v *VerifiedUser) ChangePassword(newPassword *Password) error {
-	newPasswordHash, err := newPassword.Hash()
-	if err != nil {
-		return err
-	}
-	v.passwordHash = newPasswordHash
-
-	changedAt := time.Now()
-	passwordChangedEvent := NewPasswordChanged(v.id, changedAt)
-	v.events = append(v.events, passwordChangedEvent)
-
-	return nil
 }
 
 // Type guards
-func IsUnverified(user User) (*UnverifiedUser, bool) {
-	u, ok := user.(*UnverifiedUser)
+func IsProvisional(user User) (*ProvisionalUser, bool) {
+	u, ok := user.(*ProvisionalUser)
 	return u, ok
 }
 
-func IsVerified(user User) (*VerifiedUser, bool) {
-	v, ok := user.(*VerifiedUser)
-	return v, ok
+func IsActive(user User) (*ActiveUser, bool) {
+	a, ok := user.(*ActiveUser)
+	return a, ok
 }
 
 // FromSnapshot restores a user from persistence data
-func FromSnapshot(id string, email *Email, passwordHash string, emailVerified bool, createdAt time.Time, verifiedAt *time.Time) User {
-	if emailVerified && verifiedAt != nil {
-		return &VerifiedUser{
-			baseUser: baseUser{
-				id:           id,
-				email:        email,
-				passwordHash: passwordHash,
-			},
-			createdAt:  createdAt,
-			verifiedAt: *verifiedAt,
-			events:     []DomainEvent{},
+func FromSnapshot(id, auth0UserID string, email *Email, displayName, bio, profileImageURL string, emailVerified bool, createdAt time.Time, verifiedAt *time.Time, updatedAt time.Time) User {
+	if auth0UserID != "" {
+		// Active user with Auth0 integration
+		profile := NewProfile(displayName, bio, profileImageURL)
+		return &ActiveUser{
+			id:            id,
+			auth0UserID:   auth0UserID,
+			email:         email,
+			profile:       profile,
+			emailVerified: emailVerified,
+			createdAt:     createdAt,
+			verifiedAt:    verifiedAt,
+			updatedAt:     updatedAt,
+			events:        []DomainEvent{},
 		}
 	}
 
-	return &UnverifiedUser{
-		baseUser: baseUser{
-			id:           id,
-			email:        email,
-			passwordHash: passwordHash,
-		},
+	// Provisional user without Auth0 integration
+	return &ProvisionalUser{
+		id:        id,
+		email:     email,
 		createdAt: createdAt,
 		events:    []DomainEvent{},
 	}

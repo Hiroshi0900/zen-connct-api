@@ -1,22 +1,45 @@
 package interfaces
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/labstack/echo/v4"
+	"go.uber.org/zap"
 	"zen-connect/internal/infrastructure/auth0"
+	"zen-connect/internal/infrastructure/logger"
+	"zen-connect/internal/infrastructure/session"
+	"zen-connect/internal/user/domain"
 )
 
 // Auth0Handler handles Auth0 authentication flow
 type Auth0Handler struct {
-	authService *auth0.AuthService
+	authService     *auth0.AuthService
+	callbackHandler *auth0.CallbackHandler
+	sessionStore    *session.CookieStore
 }
 
 // NewAuth0Handler creates a new Auth0Handler
-func NewAuth0Handler(authService *auth0.AuthService) *Auth0Handler {
+func NewAuth0Handler(authService *auth0.AuthService, userRepo domain.UserRepository, sessionStore *session.CookieStore, provider *oidc.Provider, config *auth0.Config) (*Auth0Handler, error) {
+	// Create ID token verifier
+	verifier := provider.Verifier(&oidc.Config{
+		ClientID: config.ClientID,
+	})
+
+	// Create OAuth2 config
+	oauth2Config := authService.GetOAuth2Config()
+
+	// Create callback handler
+	callbackHandler := auth0.NewCallbackHandler(config, oauth2Config, verifier, userRepo, sessionStore)
+
 	return &Auth0Handler{
-		authService: authService,
-	}
+		authService:     authService,
+		callbackHandler: callbackHandler,
+		sessionStore:    sessionStore,
+	}, nil
 }
 
 // SignInRequest represents the signin request
@@ -26,8 +49,19 @@ type SignInRequest struct {
 
 // SignIn handles GET /auth/login - redirects to Auth0 Universal Login (like reference app)
 func (h *Auth0Handler) SignIn(c echo.Context) error {
+	logCtx := logger.WithContext(c.Request().Context()).WithComponent(logger.ComponentAuth)
+	
 	// Generate Auth0 login URL with state
-	loginURL := h.authService.GetLoginURL("state")
+	state := "state" // TODO: Generate secure random state
+	loginURL := h.authService.GetLoginURL(state)
+	
+	logCtx.Info("User initiated login",
+		zap.String("action", "login_start"),
+		zap.String("provider", "auth0"),
+		zap.String("login_url", loginURL),
+		zap.String("user_agent", c.Request().UserAgent()),
+		zap.String("remote_addr", c.RealIP()),
+	)
 
 	// Redirect to Auth0 (307 Temporary Redirect like reference app)
 	return c.Redirect(http.StatusTemporaryRedirect, loginURL)
@@ -42,39 +76,106 @@ type CallbackRequest struct {
 	ErrorDesc   string `json:"error_description" query:"error_description"`
 }
 
-// Callback handles GET /api/auth/callback - processes Auth0 callback
+// Callback handles GET /auth/callback - processes Auth0 callback
 func (h *Auth0Handler) Callback(c echo.Context) error {
-	var req CallbackRequest
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Invalid callback parameters",
-		})
-	}
+	start := time.Now()
+	logCtx := logger.WithContext(c.Request().Context()).WithComponent(logger.ComponentAuth)
+	
+	// Get authorization code and state from query parameters
+	code := c.QueryParam("code")
+	state := c.QueryParam("state")
+	errorParam := c.QueryParam("error")
+	errorDesc := c.QueryParam("error_description")
+	
+	logCtx.Info("Processing Auth0 callback",
+		zap.String("action", "callback_start"),
+		zap.String("state", state),
+		zap.Bool("has_code", code != ""),
+		zap.String("error_param", errorParam),
+		zap.String("remote_addr", c.RealIP()),
+	)
 
 	// Check for authentication errors
-	if req.Error != "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error":             req.Error,
-			"error_description": req.ErrorDesc,
-		})
+	if errorParam != "" {
+		logCtx.Warn("Auth0 authentication error",
+			zap.String("error", errorParam),
+			zap.String("error_description", errorDesc),
+			zap.Duration("duration", time.Since(start)),
+		)
+		// Redirect to frontend with error
+		frontendURL := os.Getenv("FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:3000"
+		}
+		errorURL := fmt.Sprintf("%s/login?error=%s&error_description=%s", frontendURL, errorParam, errorDesc)
+		return c.Redirect(http.StatusTemporaryRedirect, errorURL)
 	}
 
-	// Check if we have an access token
-	if req.AccessToken == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "No access token received",
-		})
+	// Check if we have an authorization code
+	if code == "" {
+		logCtx.Warn("Auth0 callback missing authorization code",
+			zap.Duration("duration", time.Since(start)),
+		)
+		frontendURL := os.Getenv("FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:3000"
+		}
+		errorURL := fmt.Sprintf("%s/login?error=no_code", frontendURL)
+		return c.Redirect(http.StatusTemporaryRedirect, errorURL)
 	}
 
-	// Return token to frontend
-	response := map[string]interface{}{
-		"access_token": req.AccessToken,
-		"token_type":   req.TokenType,
-		"expires_in":   req.ExpiresIn,
-		"success":      true,
+	// Process callback
+	logCtx.Info("Processing Auth0 token exchange")
+	sessionData, err := h.callbackHandler.HandleCallback(c.Request().Context(), code, state)
+	if err != nil {
+		logCtx.Error("Auth0 callback processing failed",
+			zap.Error(err),
+			zap.Duration("duration", time.Since(start)),
+		)
+		// Redirect to frontend with error
+		frontendURL := os.Getenv("FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:3000"
+		}
+		errorURL := fmt.Sprintf("%s/login?error=callback_failed", frontendURL)
+		return c.Redirect(http.StatusTemporaryRedirect, errorURL)
 	}
 
-	return c.JSON(http.StatusOK, response)
+	// Create session cookie
+	logCtx.Info("Creating user session",
+		zap.String("user_id", sessionData.UserID),
+		zap.String("auth0_user_id", sessionData.Auth0UserID),
+	)
+	if err := h.sessionStore.SetSession(c, *sessionData); err != nil {
+		logCtx.Error("Failed to create session cookie",
+			zap.Error(err),
+			zap.String("user_id", sessionData.UserID),
+			zap.Duration("duration", time.Since(start)),
+		)
+		// Redirect to frontend with error
+		frontendURL := os.Getenv("FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:3000"
+		}
+		errorURL := fmt.Sprintf("%s/login?error=session_failed", frontendURL)
+		return c.Redirect(http.StatusTemporaryRedirect, errorURL)
+	}
+
+	logCtx.Info("Auth0 authentication completed successfully",
+		zap.String("action", "login_success"),
+		zap.String("user_id", sessionData.UserID),
+		zap.String("auth0_user_id", sessionData.Auth0UserID),
+		zap.String("user_email", sessionData.Email),
+		zap.Duration("duration", time.Since(start)),
+	)
+
+	// Redirect to frontend with success
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:3000"
+	}
+	successURL := fmt.Sprintf("%s/dashboard", frontendURL)
+	return c.Redirect(http.StatusTemporaryRedirect, successURL)
 }
 
 // GetLoginURL handles GET /api/auth/login-url - returns login URL for AJAX calls
@@ -90,15 +191,94 @@ func (h *Auth0Handler) GetLoginURL(c echo.Context) error {
 	})
 }
 
-// SetupRoutes sets up the Auth0 authentication routes (matching reference app pattern)
+// Me handles GET /auth/me - returns current user information
+func (h *Auth0Handler) Me(c echo.Context) error {
+	logCtx := logger.WithContext(c.Request().Context()).WithComponent(logger.ComponentAuth)
+	
+	// Get session from cookie
+	sessionData, err := h.sessionStore.GetSession(c)
+	if err != nil {
+		logCtx.Info("User info request without valid session",
+			zap.String("action", "user_info_unauthenticated"),
+			zap.String("remote_addr", c.RealIP()),
+			zap.Error(err),
+		)
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": "User not authenticated",
+		})
+	}
+
+	logCtx.Info("User info request successful",
+		zap.String("action", "user_info_success"),
+		zap.String("user_id", sessionData.UserID),
+		zap.String("auth0_user_id", sessionData.Auth0UserID),
+	)
+
+	// Return user information
+	response := map[string]interface{}{
+		"user_id":       sessionData.UserID,
+		"auth0_user_id": sessionData.Auth0UserID,
+		"email":         sessionData.Email,
+		"name":          sessionData.Name,
+		"expires_at":    sessionData.ExpiresAt,
+		"authenticated": true,
+	}
+
+	return c.JSON(http.StatusOK, response)
+}
+
+// Logout handles GET /auth/logout - clears session and redirects to Auth0 logout
+func (h *Auth0Handler) Logout(c echo.Context) error {
+	logCtx := logger.WithContext(c.Request().Context()).WithComponent(logger.ComponentAuth)
+	
+	// Get current session data for logging
+	sessionData, sessionErr := h.sessionStore.GetSession(c)
+	if sessionErr == nil {
+		logCtx = logCtx.WithUserInfo(sessionData.UserID, sessionData.Auth0UserID, sessionData.Email, sessionData.Name)
+	}
+	
+	logCtx.Info("User initiated logout",
+		zap.String("action", "logout_start"),
+		zap.Bool("had_valid_session", sessionErr == nil),
+		zap.String("remote_addr", c.RealIP()),
+	)
+
+	// Clear session cookie
+	h.sessionStore.ClearSession(c)
+
+	// Get Auth0 logout URL
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:3000"
+	}
+
+	// Construct Auth0 logout URL
+	auth0Config, _ := auth0.NewConfig()
+	logoutURL := fmt.Sprintf("https://%s/v2/logout?client_id=%s&returnTo=%s",
+		auth0Config.Domain,
+		auth0Config.ClientID,
+		frontendURL,
+	)
+	
+	logCtx.Info("User logout completed",
+		zap.String("action", "logout_success"),
+		zap.String("redirect_url", logoutURL),
+	)
+
+	return c.Redirect(http.StatusTemporaryRedirect, logoutURL)
+}
+
+// SetupRoutes sets up the Auth0 authentication routes
 func (h *Auth0Handler) SetupRoutes(e *echo.Echo) {
 	auth := e.Group("/auth")
 
-	// Authentication flow endpoints (matching reference app)
-	auth.GET("/login", h.SignIn)            // Redirects to Auth0
-	auth.GET("/callback", h.Callback)       // Handles Auth0 callback
+	// Authentication flow endpoints
+	auth.GET("/login", h.SignIn)      // Redirects to Auth0
+	auth.GET("/callback", h.Callback) // Handles Auth0 callback
+	auth.GET("/logout", h.Logout)     // Clears session and redirects to Auth0 logout
+	auth.GET("/me", h.Me)             // Returns current user information
 	
 	// Keep API endpoints too
 	apiAuth := e.Group("/api/auth")
-	apiAuth.GET("/login-url", h.GetLoginURL)   // Returns login URL for AJAX
+	apiAuth.GET("/login-url", h.GetLoginURL) // Returns login URL for AJAX
 }

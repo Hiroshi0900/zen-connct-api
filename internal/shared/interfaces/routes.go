@@ -25,8 +25,10 @@ func (h *RoutesHandler) ListRoutes(c echo.Context) error {
 				"GET /health/protected": "Protected health check (requires Auth0 token)",
 			},
 			"authentication": map[string]string{
-				"GET /auth/login":       "Redirect to Auth0 login",
-				"GET /auth/callback":    "Auth0 callback handler",
+				"GET /auth/login":         "Redirect to Auth0 login",
+				"GET /auth/callback":      "Auth0 callback handler",
+				"GET /auth/logout":        "Logout and redirect to Auth0",
+				"GET /auth/me":            "Get current user information (404 if not authenticated)",
 				"GET /api/auth/login-url": "Get Auth0 login URL (AJAX)",
 			},
 			"documentation": map[string]string{
