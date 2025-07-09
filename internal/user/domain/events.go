@@ -80,3 +80,25 @@ func (e *PasswordChanged) EventName() string     { return e.eventName }
 func (e *PasswordChanged) AggregateID() string   { return e.aggregateID }
 func (e *PasswordChanged) OccurredAt() time.Time { return e.occurredAt }
 func (e *PasswordChanged) ChangedAt() time.Time  { return e.changedAt }
+
+// UserProfileUpdated event fired when user's profile is updated
+type UserProfileUpdated struct {
+	eventName   string
+	aggregateID string
+	occurredAt  time.Time
+	updatedAt   time.Time
+}
+
+func NewUserProfileUpdated(aggregateID string, updatedAt time.Time) *UserProfileUpdated {
+	return &UserProfileUpdated{
+		eventName:   "UserProfileUpdated",
+		aggregateID: aggregateID,
+		occurredAt:  updatedAt,
+		updatedAt:   updatedAt,
+	}
+}
+
+func (e *UserProfileUpdated) EventName() string     { return e.eventName }
+func (e *UserProfileUpdated) AggregateID() string   { return e.aggregateID }
+func (e *UserProfileUpdated) OccurredAt() time.Time { return e.occurredAt }
+func (e *UserProfileUpdated) UpdatedAt() time.Time  { return e.updatedAt }

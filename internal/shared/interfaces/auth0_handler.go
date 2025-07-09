@@ -24,16 +24,11 @@ type Auth0Handler struct {
 
 // NewAuth0Handler creates a new Auth0Handler
 func NewAuth0Handler(authService *auth0.AuthService, userRepo domain.UserRepository, sessionStore *session.CookieStore, provider *oidc.Provider, config *auth0.Config) (*Auth0Handler, error) {
-	// Create ID token verifier
-	verifier := provider.Verifier(&oidc.Config{
-		ClientID: config.ClientID,
-	})
-
 	// Create OAuth2 config
 	oauth2Config := authService.GetOAuth2Config()
 
 	// Create callback handler
-	callbackHandler := auth0.NewCallbackHandler(config, oauth2Config, verifier, userRepo, sessionStore)
+	callbackHandler := auth0.NewCallbackHandler(oauth2Config, provider, userRepo)
 
 	return &Auth0Handler{
 		authService:     authService,
@@ -107,7 +102,7 @@ func (h *Auth0Handler) Callback(c echo.Context) error {
 		if frontendURL == "" {
 			frontendURL = "http://localhost:3000"
 		}
-		errorURL := fmt.Sprintf("%s/login?error=%s&error_description=%s", frontendURL, errorParam, errorDesc)
+		errorURL := fmt.Sprintf("%s/?error=%s&error_description=%s", frontendURL, errorParam, errorDesc)
 		return c.Redirect(http.StatusTemporaryRedirect, errorURL)
 	}
 
@@ -120,7 +115,7 @@ func (h *Auth0Handler) Callback(c echo.Context) error {
 		if frontendURL == "" {
 			frontendURL = "http://localhost:3000"
 		}
-		errorURL := fmt.Sprintf("%s/login?error=no_code", frontendURL)
+		errorURL := fmt.Sprintf("%s/?error=no_code", frontendURL)
 		return c.Redirect(http.StatusTemporaryRedirect, errorURL)
 	}
 
@@ -137,7 +132,7 @@ func (h *Auth0Handler) Callback(c echo.Context) error {
 		if frontendURL == "" {
 			frontendURL = "http://localhost:3000"
 		}
-		errorURL := fmt.Sprintf("%s/login?error=callback_failed", frontendURL)
+		errorURL := fmt.Sprintf("%s/?error=auth_failed", frontendURL)
 		return c.Redirect(http.StatusTemporaryRedirect, errorURL)
 	}
 
@@ -157,7 +152,7 @@ func (h *Auth0Handler) Callback(c echo.Context) error {
 		if frontendURL == "" {
 			frontendURL = "http://localhost:3000"
 		}
-		errorURL := fmt.Sprintf("%s/login?error=session_failed", frontendURL)
+		errorURL := fmt.Sprintf("%s/?error=session_failed", frontendURL)
 		return c.Redirect(http.StatusTemporaryRedirect, errorURL)
 	}
 
@@ -174,7 +169,7 @@ func (h *Auth0Handler) Callback(c echo.Context) error {
 	if frontendURL == "" {
 		frontendURL = "http://localhost:3000"
 	}
-	successURL := fmt.Sprintf("%s/dashboard", frontendURL)
+	successURL := fmt.Sprintf("%s/", frontendURL)
 	return c.Redirect(http.StatusTemporaryRedirect, successURL)
 }
 
@@ -203,7 +198,7 @@ func (h *Auth0Handler) Me(c echo.Context) error {
 			zap.String("remote_addr", c.RealIP()),
 			zap.Error(err),
 		)
-		return c.JSON(http.StatusNotFound, map[string]string{
+		return c.JSON(http.StatusUnauthorized, map[string]string{
 			"error": "User not authenticated",
 		})
 	}

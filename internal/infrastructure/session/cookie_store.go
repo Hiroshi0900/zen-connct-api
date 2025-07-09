@@ -13,11 +13,13 @@ import (
 
 // SessionData represents the data stored in the session cookie
 type SessionData struct {
-	UserID      string    `json:"uid"`      // Local DB user ID
-	Auth0UserID string    `json:"sub"`      // Auth0 user ID
-	Email       string    `json:"email"`
-	Name        string    `json:"name"`
-	ExpiresAt   time.Time `json:"exp"`
+	UserID       string    `json:"uid"`      // Local DB user ID
+	Auth0UserID  string    `json:"sub"`      // Auth0 user ID
+	Email        string    `json:"email"`
+	Name         string    `json:"name"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ExpiresAt    time.Time `json:"exp"`
 }
 
 // CookieStore manages encrypted session cookies

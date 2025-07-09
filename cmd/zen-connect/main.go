@@ -108,7 +108,33 @@ func main() {
 	e.Use(logger.SessionLoggerMiddleware())
 	e.Use(logger.ErrorLoggerMiddleware())
 	e.Use(logger.RecoveryLoggerMiddleware())
-	e.Use(echoMiddleware.CORS())
+	
+	// CORS middleware with proper configuration for authentication
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:3000" // デフォルト値
+	}
+	logger.Info("CORS configuration", zap.String("frontend_url", frontendURL))
+	
+	// CORS設定（開発環境用）
+	e.Use(echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{
+		AllowOrigins: []string{
+			"http://localhost:3000",
+		},
+		AllowMethods: []string{
+			"GET", 
+			"POST", 
+			"OPTIONS",
+		},
+		AllowHeaders: []string{
+			"Accept",
+			"Authorization",
+			"Content-Type",
+			"X-Requested-With",
+		},
+		AllowCredentials: true,
+		MaxAge:           86400,
+	}))
 
 	// Initialize Auth0 handler
 	logger.Info("Initializing Auth0 handler")

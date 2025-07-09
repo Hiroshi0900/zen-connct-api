@@ -1,28 +1,27 @@
 package infrastructure
 
 import (
-	"errors"
 	"sync"
 	"zen-connect/internal/user/domain"
 )
 
 // InMemoryUserRepository implements UserRepository interface using in-memory storage
 type InMemoryUserRepository struct {
-	users  map[string]domain.User // userID -> User
-	emails map[string]string      // email -> userID
+	users  map[string]*domain.User // userID -> User
+	emails map[string]string       // email -> userID
 	mutex  sync.RWMutex
 }
 
 // NewInMemoryUserRepository creates a new in-memory user repository
 func NewInMemoryUserRepository() *InMemoryUserRepository {
 	return &InMemoryUserRepository{
-		users:  make(map[string]domain.User),
+		users:  make(map[string]*domain.User),
 		emails: make(map[string]string),
 	}
 }
 
 // Save stores a user in memory
-func (r *InMemoryUserRepository) Save(user domain.User) error {
+func (r *InMemoryUserRepository) Save(user *domain.User) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
@@ -30,37 +29,37 @@ func (r *InMemoryUserRepository) Save(user domain.User) error {
 	r.users[user.ID()] = user
 
 	// Store email mapping
-	r.emails[user.Email().Value()] = user.ID()
+	r.emails[user.Email().String()] = user.ID()
 
 	return nil
 }
 
 // FindByEmail finds a user by email address
-func (r *InMemoryUserRepository) FindByEmail(email *domain.Email) (domain.User, error) {
+func (r *InMemoryUserRepository) FindByEmail(email *domain.Email) (*domain.User, error) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	userID, exists := r.emails[email.Value()]
+	userID, exists := r.emails[email.String()]
 	if !exists {
-		return nil, errors.New("user not found")
+		return nil, domain.ErrUserNotFound
 	}
 
 	user, exists := r.users[userID]
 	if !exists {
-		return nil, errors.New("user not found")
+		return nil, domain.ErrUserNotFound
 	}
 
 	return user, nil
 }
 
 // FindByID finds a user by ID
-func (r *InMemoryUserRepository) FindByID(id string) (domain.User, error) {
+func (r *InMemoryUserRepository) FindByID(id string) (*domain.User, error) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
 	user, exists := r.users[id]
 	if !exists {
-		return nil, errors.New("user not found")
+		return nil, domain.ErrUserNotFound
 	}
 
 	return user, nil

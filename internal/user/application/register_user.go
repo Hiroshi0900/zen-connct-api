@@ -45,17 +45,8 @@ func (uc *RegisterUserUseCase) Execute(req RegisterUserRequest) (*RegisterUserRe
 		return nil, errors.New("user with this email already exists")
 	}
 
-	// Validate and create Password value object
-	password, err := domain.NewPassword(req.Password)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create new user
-	user, err := domain.NewUnverifiedUser(email, password)
-	if err != nil {
-		return nil, err
-	}
+	// Create new user (unverified)
+	user := domain.NewUser(email.Value(), email, "", false)
 
 	// Save user
 	if err := uc.userRepo.Save(user); err != nil {

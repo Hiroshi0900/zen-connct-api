@@ -6,45 +6,34 @@ import (
 )
 
 // TODO: 以下以降のテストは全部見直す必要がある。
-func TestNewUnverifiedUser_ValidInputs_ShouldCreateUser(t *testing.T) {
+func TestNewUser_ValidInputs_ShouldCreateUser(t *testing.T) {
 	// Arrange
 	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
 
 	// Act
-	user, err := NewUnverifiedUser(email, password)
+	user := NewUser("auth0-user-id", email, "Test User", false)
 
 	// Assert
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
 	if user == nil {
-		t.Error("Expected user to be created, got nil")
+		t.Error("Expected user to be created")
 	}
 	if user.ID() == "" {
 		t.Error("Expected user ID to be generated")
 	}
-	if !user.Email().Equals(email) {
+	if user.Email().String() != email.String() {
 		t.Error("Expected user email to match input email")
 	}
-	if user.PasswordHash() == "" {
-		t.Error("Expected password hash to be generated")
-	}
-	if user.IsVerified() {
-		t.Error("Expected new user to be unverified")
-	}
-	if !user.IsUnverified() {
+	if user.EmailVerified() {
 		t.Error("Expected new user to be unverified")
 	}
 }
 
-func TestNewUnverifiedUser_ShouldGenerateUserRegisteredEvent(t *testing.T) {
+func TestNewUser_ShouldGenerateUserRegisteredEvent(t *testing.T) {
 	// Arrange
 	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
 
 	// Act
-	user, _ := NewUnverifiedUser(email, password)
+	user := NewUser("auth0-user-id", email, "Test User", false)
 
 	// Assert
 	events := user.Events()
@@ -54,270 +43,139 @@ func TestNewUnverifiedUser_ShouldGenerateUserRegisteredEvent(t *testing.T) {
 
 	event := events[0]
 	if event.EventName() != "UserRegistered" {
-		t.Errorf("Expected UserRegistered event, got %s", event.EventName())
+		t.Errorf("Expected event name 'UserRegistered', got '%s'", event.EventName())
 	}
 	if event.AggregateID() != user.ID() {
-		t.Error("Expected event aggregate ID to match user ID")
+		t.Errorf("Expected event aggregate ID to match user ID")
 	}
 }
 
-func TestUnverifiedUser_VerifyEmail_ShouldReturnVerifiedUser(t *testing.T) {
+func TestVerifyEmail_ShouldUpdateUserAndGenerateEvent(t *testing.T) {
 	// Arrange
 	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	unverifiedUser, _ := NewUnverifiedUser(email, password)
+	user := NewUser("auth0-user-id", email, "Test User", false)
+	user.ClearEvents() // Clear the initial registration event
 
 	// Act
-	verifiedUser := unverifiedUser.VerifyEmail()
+	user.VerifyEmail()
 
 	// Assert
-	if verifiedUser == nil {
-		t.Error("Expected verified user to be created")
-	}
-	if !verifiedUser.IsVerified() {
+	if !user.EmailVerified() {
 		t.Error("Expected user to be verified")
 	}
-	if verifiedUser.IsUnverified() {
-		t.Error("Expected user to not be unverified")
+	if user.VerifiedAt() == nil {
+		t.Error("Expected verified at timestamp to be set")
 	}
-	if verifiedUser.ID() != unverifiedUser.ID() {
-		t.Error("Expected verified user to have same ID as unverified user")
+
+	events := user.Events()
+	if len(events) != 1 {
+		t.Errorf("Expected 1 event, got %d", len(events))
 	}
-	if !verifiedUser.Email().Equals(unverifiedUser.Email()) {
-		t.Error("Expected verified user to have same email as unverified user")
-	}
-	if verifiedUser.PasswordHash() != unverifiedUser.PasswordHash() {
-		t.Error("Expected verified user to have same password hash as unverified user")
+
+	event := events[0]
+	if event.EventName() != "EmailVerified" {
+		t.Errorf("Expected event name 'EmailVerified', got '%s'", event.EventName())
 	}
 }
 
-func TestUnverifiedUser_VerifyEmail_ShouldGenerateEmailVerifiedEvent(t *testing.T) {
+func TestVerifyEmail_AlreadyVerified_ShouldNotChangeUser(t *testing.T) {
 	// Arrange
 	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	unverifiedUser, _ := NewUnverifiedUser(email, password)
+	user := NewUser("auth0-user-id", email, "Test User", true)
+	user.ClearEvents() // Clear the initial registration event
+	originalVerifiedAt := user.VerifiedAt()
 
 	// Act
-	verifiedUser := unverifiedUser.VerifyEmail()
+	user.VerifyEmail()
 
 	// Assert
-	events := verifiedUser.Events()
-	if len(events) != 2 {
-		t.Errorf("Expected 2 events (UserRegistered + EmailVerified), got %d", len(events))
+	if user.VerifiedAt() != originalVerifiedAt {
+		t.Error("Expected verified at timestamp to remain unchanged")
 	}
 
-	emailVerifiedEvent := events[1]
-	if emailVerifiedEvent.EventName() != "EmailVerified" {
-		t.Errorf("Expected EmailVerified event, got %s", emailVerifiedEvent.EventName())
-	}
-	if emailVerifiedEvent.AggregateID() != verifiedUser.ID() {
-		t.Error("Expected event aggregate ID to match user ID")
+	events := user.Events()
+	if len(events) != 0 {
+		t.Errorf("Expected 0 events, got %d", len(events))
 	}
 }
 
-func TestUnverifiedUser_VerifyPassword_CorrectPassword_ShouldReturnTrue(t *testing.T) {
+func TestUpdateProfile_ShouldUpdateUserAndGenerateEvent(t *testing.T) {
 	// Arrange
 	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	user, _ := NewUnverifiedUser(email, password)
+	user := NewUser("auth0-user-id", email, "Test User", false)
+	user.ClearEvents() // Clear the initial registration event
 
 	// Act
-	result := user.VerifyPassword(password)
+	user.UpdateProfile("New Name", "New bio", "new-image.jpg")
 
 	// Assert
-	if !result {
-		t.Error("Expected password verification to return true for correct password")
+	if user.Profile().DisplayName() != "New Name" {
+		t.Error("Expected display name to be updated")
+	}
+	if user.Profile().Bio() != "New bio" {
+		t.Error("Expected bio to be updated")
+	}
+	if user.Profile().ProfileImageURL() != "new-image.jpg" {
+		t.Error("Expected profile image URL to be updated")
+	}
+
+	events := user.Events()
+	if len(events) != 1 {
+		t.Errorf("Expected 1 event, got %d", len(events))
+	}
+
+	event := events[0]
+	if event.EventName() != "UserProfileUpdated" {
+		t.Errorf("Expected event name 'UserProfileUpdated', got '%s'", event.EventName())
 	}
 }
 
-func TestUnverifiedUser_VerifyPassword_IncorrectPassword_ShouldReturnFalse(t *testing.T) {
+func TestFromSnapshot_ValidInputs_ShouldCreateUser(t *testing.T) {
 	// Arrange
-	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	wrongPassword, _ := NewPassword("WrongPass456#")
-	user, _ := NewUnverifiedUser(email, password)
+	id := "user-123"
+	auth0UserID := "auth0-user-id"
+	email := "test@example.com"
+	displayName := "Test User"
+	bio := "Test bio"
+	profileImageURL := "test-image.jpg"
+	emailVerified := true
+	createdAt := time.Now()
+	verifiedAt := &createdAt
+	updatedAt := time.Now()
 
 	// Act
-	result := user.VerifyPassword(wrongPassword)
-
-	// Assert
-	if result {
-		t.Error("Expected password verification to return false for incorrect password")
-	}
-}
-
-func TestUnverifiedUser_ChangePassword_ShouldUpdatePasswordHash(t *testing.T) {
-	// Arrange
-	email, _ := NewEmail("test@example.com")
-	oldPassword, _ := NewPassword("OldPass123!")
-	newPassword, _ := NewPassword("NewPass456#")
-	user, _ := NewUnverifiedUser(email, oldPassword)
-	oldHash := user.PasswordHash()
-
-	// Act
-	err := user.ChangePassword(newPassword)
+	user, err := FromSnapshot(id, auth0UserID, email, displayName, bio, profileImageURL, emailVerified, createdAt, verifiedAt, updatedAt)
 
 	// Assert
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if user.PasswordHash() == oldHash {
-		t.Error("Expected password hash to change")
+	if user.ID() != id {
+		t.Error("Expected user ID to match snapshot")
 	}
-	if !user.VerifyPassword(newPassword) {
-		t.Error("Expected new password to be verified")
+	if user.Auth0UserID() != auth0UserID {
+		t.Error("Expected Auth0 user ID to match snapshot")
 	}
-	if user.VerifyPassword(oldPassword) {
-		t.Error("Expected old password to not be verified")
+	if user.Email().String() != email {
+		t.Error("Expected email to match snapshot")
 	}
-}
-
-func TestVerifiedUser_VerifiedAt_ShouldReturnVerificationTime(t *testing.T) {
-	// Arrange
-	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	unverifiedUser, _ := NewUnverifiedUser(email, password)
-	beforeVerification := time.Now()
-
-	// Act
-	verifiedUser := unverifiedUser.VerifyEmail()
-	afterVerification := time.Now()
-
-	// Assert
-	verifiedAt := verifiedUser.VerifiedAt()
-	if verifiedAt.Before(beforeVerification) || verifiedAt.After(afterVerification) {
-		t.Error("Expected verified at time to be between before and after verification")
+	if user.Profile().DisplayName() != displayName {
+		t.Error("Expected display name to match snapshot")
+	}
+	if user.EmailVerified() != emailVerified {
+		t.Error("Expected email verified status to match snapshot")
 	}
 }
 
-func TestUser_ClearEvents_ShouldRemoveAllEvents(t *testing.T) {
+func TestFromSnapshot_InvalidEmail_ShouldReturnError(t *testing.T) {
 	// Arrange
-	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	user, _ := NewUnverifiedUser(email, password)
+	invalidEmail := "invalid-email"
 
 	// Act
-	user.ClearEvents()
+	_, err := FromSnapshot("id", "auth0-id", invalidEmail, "name", "bio", "image", false, time.Now(), nil, time.Now())
 
 	// Assert
-	events := user.Events()
-	if len(events) != 0 {
-		t.Errorf("Expected 0 events after clearing, got %d", len(events))
-	}
-}
-
-func TestIsUnverified_WithUnverifiedUser_ShouldReturnTrue(t *testing.T) {
-	// Arrange
-	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	user, _ := NewUnverifiedUser(email, password)
-
-	// Act
-	unverifiedUser, ok := IsUnverified(user)
-
-	// Assert
-	if !ok {
-		t.Error("Expected IsUnverified to return true for unverified user")
-	}
-	if unverifiedUser == nil {
-		t.Error("Expected to get unverified user instance")
-	}
-}
-
-func TestIsUnverified_WithVerifiedUser_ShouldReturnFalse(t *testing.T) {
-	// Arrange
-	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	unverifiedUser, _ := NewUnverifiedUser(email, password)
-	verifiedUser := unverifiedUser.VerifyEmail()
-
-	// Act
-	_, ok := IsUnverified(verifiedUser)
-
-	// Assert
-	if ok {
-		t.Error("Expected IsUnverified to return false for verified user")
-	}
-}
-
-func TestIsVerified_WithVerifiedUser_ShouldReturnTrue(t *testing.T) {
-	// Arrange
-	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	unverifiedUser, _ := NewUnverifiedUser(email, password)
-	verifiedUser := unverifiedUser.VerifyEmail()
-
-	// Act
-	actualVerifiedUser, ok := IsVerified(verifiedUser)
-
-	// Assert
-	if !ok {
-		t.Error("Expected IsVerified to return true for verified user")
-	}
-	if actualVerifiedUser == nil {
-		t.Error("Expected to get verified user instance")
-	}
-}
-
-func TestIsVerified_WithUnverifiedUser_ShouldReturnFalse(t *testing.T) {
-	// Arrange
-	email, _ := NewEmail("test@example.com")
-	password, _ := NewPassword("ValidPass123!")
-	user, _ := NewUnverifiedUser(email, password)
-
-	// Act
-	_, ok := IsVerified(user)
-
-	// Assert
-	if ok {
-		t.Error("Expected IsVerified to return false for unverified user")
-	}
-}
-
-func TestFromSnapshot_UnverifiedUser_ShouldRestoreUnverifiedUser(t *testing.T) {
-	// Arrange
-	email, _ := NewEmail("test@example.com")
-	passwordHash := "hashed_password"
-	createdAt := time.Now()
-
-	// Act
-	user := FromSnapshot("user-123", email, passwordHash, false, createdAt, nil)
-
-	// Assert
-	if user.IsVerified() {
-		t.Error("Expected restored user to be unverified")
-	}
-	if !user.IsUnverified() {
-		t.Error("Expected restored user to be unverified")
-	}
-	if user.ID() != "user-123" {
-		t.Error("Expected restored user to have correct ID")
-	}
-}
-
-func TestFromSnapshot_VerifiedUser_ShouldRestoreVerifiedUser(t *testing.T) {
-	// Arrange
-	email, _ := NewEmail("test@example.com")
-	passwordHash := "hashed_password"
-	createdAt := time.Now()
-	verifiedAt := time.Now().Add(time.Hour)
-
-	// Act
-	user := FromSnapshot("user-123", email, passwordHash, true, createdAt, &verifiedAt)
-
-	// Assert
-	if !user.IsVerified() {
-		t.Error("Expected restored user to be verified")
-	}
-	if user.IsUnverified() {
-		t.Error("Expected restored user to not be unverified")
-	}
-
-	verifiedUser, ok := IsVerified(user)
-	if !ok {
-		t.Error("Expected to be able to cast to VerifiedUser")
-	}
-	if !verifiedUser.VerifiedAt().Equal(verifiedAt) {
-		t.Error("Expected restored user to have correct verified at time")
+	if err == nil {
+		t.Error("Expected error for invalid email")
 	}
 }

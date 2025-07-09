@@ -108,14 +108,12 @@ func (s *AuthService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 
 // GetLoginURL generates Universal Login URL using oauth2 library with audience
 func (s *AuthService) GetLoginURL(state string) string {
-	// Test without audience first
-	return s.oauth2Config.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	
-	// Add audience parameter for Auth0 API access (commented out for testing)
-	// return s.oauth2Config.AuthCodeURL(state, 
-	// 	oauth2.AccessTypeOffline,
-	// 	oauth2.SetAuthURLParam("audience", s.config.Audience),
-	// )
+	// Generate login URL with Japanese locale
+	return s.oauth2Config.AuthCodeURL(state, 
+		oauth2.AccessTypeOffline,
+		oauth2.SetAuthURLParam("ui_locales", "ja"),
+		// oauth2.SetAuthURLParam("audience", s.config.Audience), // Add if API access needed
+	)
 }
 
 // GetOAuth2Config returns the OAuth2 configuration
