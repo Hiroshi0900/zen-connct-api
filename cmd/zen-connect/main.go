@@ -13,6 +13,10 @@ import (
 	"zen-connect/internal/infrastructure/session"
 	"zen-connect/internal/shared/interfaces"
 	"zen-connect/internal/user/infrastructure"
+	userservice "zen-connect/internal/user/application/service"
+	userusecase "zen-connect/internal/user/application/usecase"
+	userinterfaces "zen-connect/internal/user/interfaces"
+	authinterfaces "zen-connect/internal/auth/interfaces"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/joho/godotenv"
@@ -136,21 +140,36 @@ func main() {
 		MaxAge:           86400,
 	}))
 
-	// Initialize Auth0 handler
-	logger.Info("Initializing Auth0 handler")
-	auth0Handler, err := interfaces.NewAuth0Handler(authService, userRepo, sessionStore, provider, auth0Config)
+	// Initialize new architecture components
+	logger.Info("Initializing new architecture components")
+	
+	// User service
+	userService := userservice.NewUserService(userRepo)
+
+	// Initialize new auth handler with UserService
+	logger.Info("Initializing new auth handler")
+	newAuthHandler, err := authinterfaces.NewAuthHandler(authService, userService, sessionStore, provider, auth0Config)
 	if err != nil {
-		logger.Fatal("Failed to create Auth0 handler", zap.Error(err))
+		logger.Fatal("Failed to create new auth handler", zap.Error(err))
 	}
-	logger.Info("Auth0 handler initialized successfully")
+	logger.Info("New auth handler initialized successfully")
 
 	// Setup routes
 	logger.Info("Setting up application routes")
-	auth0Handler.SetupRoutes(e)
+	// Use new auth handler
+	newAuthHandler.SetupRoutes(e)
+
+	// User use cases
+	getUserProfileUseCase := userusecase.NewGetUserProfileUseCase(userService)
+	
+	// User handler (only keeping GetCurrentUser endpoint)
+	userHandler := userinterfaces.NewUserHandler(nil, nil, getUserProfileUseCase)
+	userHandler.SetupRoutes(e, sessionMiddleware)
 
 	// Setup API documentation
 	routesHandler := interfaces.NewRoutesHandler()
 	routesHandler.SetupRoutes(e)
+	
 	logger.Info("Routes configured successfully")
 
 	// Health check endpoints

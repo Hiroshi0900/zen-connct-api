@@ -306,7 +306,14 @@ func logRequestStart(logCtx *LogContext, req *http.Request, requestBody []byte) 
 		}
 	}
 
-	logCtx.Info("HTTP request started", fields...)
+	// Lower log level for frequently accessed endpoints
+	isFrequentEndpoint := req.URL.Path == "/auth/me" || req.URL.Path == "/health"
+	
+	if isFrequentEndpoint {
+		logCtx.Debug("HTTP request started", fields...)
+	} else {
+		logCtx.Info("HTTP request started", fields...)
+	}
 }
 
 func logRequestComplete(logCtx *LogContext, req *http.Request, res *echo.Response, duration time.Duration, requestBody, responseBody []byte, err error) {
@@ -328,6 +335,10 @@ func logRequestComplete(logCtx *LogContext, req *http.Request, res *echo.Respons
 
 	// Log level based on status code and error
 	message := "HTTP request completed"
+	
+	// Lower log level for frequently accessed endpoints
+	isFrequentEndpoint := req.URL.Path == "/auth/me" || req.URL.Path == "/health"
+	
 	if err != nil {
 		fields = append(fields, zap.Error(err))
 		logCtx.Error(message, fields...)
@@ -335,6 +346,8 @@ func logRequestComplete(logCtx *LogContext, req *http.Request, res *echo.Respons
 		logCtx.Error(message, fields...)
 	} else if res.Status >= 400 {
 		logCtx.Warn(message, fields...)
+	} else if isFrequentEndpoint {
+		logCtx.Debug(message, fields...)
 	} else {
 		logCtx.Info(message, fields...)
 	}

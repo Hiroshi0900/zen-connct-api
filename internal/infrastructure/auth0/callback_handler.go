@@ -7,6 +7,8 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 	"zen-connect/internal/infrastructure/session"
+	"zen-connect/internal/user/application/dto"
+	"zen-connect/internal/user/application/service"
 	"zen-connect/internal/user/domain"
 )
 
@@ -14,15 +16,15 @@ import (
 type CallbackHandler struct {
 	oauth2Config *oauth2.Config
 	provider     *oidc.Provider
-	userRepo     domain.UserRepository
+	userService  service.UserService
 }
 
 // NewCallbackHandler creates a new callback handler
-func NewCallbackHandler(oauth2Config *oauth2.Config, provider *oidc.Provider, userRepo domain.UserRepository) *CallbackHandler {
+func NewCallbackHandler(oauth2Config *oauth2.Config, provider *oidc.Provider, userService service.UserService) *CallbackHandler {
 	return &CallbackHandler{
 		oauth2Config: oauth2Config,
 		provider:     provider,
-		userRepo:     userRepo,
+		userService:  userService,
 	}
 }
 
@@ -84,46 +86,19 @@ func (h *CallbackHandler) HandleCallback(ctx context.Context, code, state string
 
 // createOrUpdateUser creates a new user or updates existing user
 func (h *CallbackHandler) createOrUpdateUser(claims Claims) (*domain.User, error) {
-	// Try to find existing user by Auth0 user ID
-	existingUser, err := h.userRepo.FindByAuth0UserID(claims.Sub)
-	if err == nil {
-		// User exists, update information if needed
-		// Update profile if changed
-		if existingUser.Profile().DisplayName() != claims.Name {
-			existingUser.UpdateProfile(claims.Name, existingUser.Profile().Bio(), claims.Picture)
-		}
-
-		// Update email verification status
-		if claims.EmailVerified && !existingUser.EmailVerified() {
-			existingUser.VerifyEmail()
-		}
-
-		// Save updated user
-		if err := h.userRepo.Save(existingUser); err != nil {
-			return nil, fmt.Errorf("failed to update user: %w", err)
-		}
-
-		return existingUser, nil
+	// Use new UserService to register or update user from auth
+	cmd := dto.RegisterFromAuthCommand{
+		Auth0UserID:   claims.Sub,
+		Email:         claims.Email,
+		Name:          claims.Name,
+		Picture:       claims.Picture,
+		EmailVerified: claims.EmailVerified,
 	}
-
-	// User doesn't exist, create new user
-	email, err := domain.NewEmail(claims.Email)
-	if err != nil {
-		return nil, fmt.Errorf("invalid email: %w", err)
-	}
-
-	// Create new user
-	newUser := domain.NewUser(claims.Sub, email, claims.Name, claims.EmailVerified)
 	
-	// Set profile image if provided
-	if claims.Picture != "" {
-		newUser.UpdateProfile(claims.Name, "", claims.Picture)
+	user, err := h.userService.RegisterOrUpdateUserFromAuth(context.Background(), cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register or update user: %w", err)
 	}
-
-	// Save new user
-	if err := h.userRepo.Save(newUser); err != nil {
-		return nil, fmt.Errorf("failed to save user: %w", err)
-	}
-
-	return newUser, nil
+	
+	return user, nil
 }
